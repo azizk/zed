@@ -65,6 +65,20 @@ world extension {
     import set-language-server-installation-status: func(language-server-name: string, status: language-server-installation-status);
 
     /// A Zed worktree.
+    record syntax-node {
+        id: u32,
+        parent-id: option<u32>,
+        kind: string,
+        named: bool,
+        field-name: option<string>,
+        start-byte: u32,
+        end-byte: u32,
+        start-row: u32,
+        start-column: u32,
+        end-row: u32,
+        end-column: u32,
+    }
+
     resource worktree {
         /// Returns the ID of the worktree.
         id: func() -> u64;
@@ -72,6 +86,8 @@ world extension {
         root-path: func() -> string;
         /// Returns the textual contents of the specified file in the worktree.
         read-text-file: func(path: string) -> result<string, string>;
+        /// Returns the complete Tree-sitter AST for the specified file as a list of nodes.
+        read-syntax-tree: func(path: string) -> result<list<syntax-node>, string>;
         /// Returns the path to the given binary name, if one is present on the `$PATH`.
         which: func(binary-name: string) -> option<string>;
         /// Returns the current shell environment.

@@ -310,6 +310,21 @@ pub struct Location {
     pub range: Range<Anchor>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxNode {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub kind: String,
+    pub named: bool,
+    pub field_name: Option<String>,
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub start_row: u32,
+    pub start_column: u32,
+    pub end_row: u32,
+    pub end_column: u32,
+}
+
 /// Context provided to LSP adapters when a user responds to a ShowMessageRequest prompt.
 /// This allows adapters to intercept preference selections (like "Always" or "Never")
 /// and potentially persist them to Zed's settings.
@@ -506,6 +521,7 @@ pub trait LspAdapterDelegate: Send + Sync {
     async fn which(&self, command: &OsStr) -> Option<PathBuf>;
     async fn shell_env(&self) -> HashMap<String, String>;
     async fn read_text_file(&self, path: &RelPath) -> Result<String>;
+    async fn read_syntax_tree(&self, path: &RelPath) -> Result<Vec<SyntaxNode>>;
     async fn try_exec(&self, binary: LanguageServerBinary) -> Result<()>;
 }
 

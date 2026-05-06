@@ -81,7 +81,7 @@ use language::{
     DiagnosticSourceKind, Diff, File as _, Language, LanguageAwareStyling, LanguageName,
     LanguageRegistry, LocalFile, LspAdapter, LspAdapterDelegate, LspInstaller, ManifestDelegate,
     ManifestName, ModelineSettings, OffsetUtf16, Patch, PointUtf16, RelatedInformation,
-    RelatedLocation, TextBufferSnapshot, ToOffset, ToOffsetUtf16, ToPointUtf16, Toolchain,
+    RelatedLocation, SyntaxNode, TextBufferSnapshot, ToOffset, ToOffsetUtf16, ToPointUtf16, Toolchain,
     Transaction, Unclipped,
     language_settings::{
         AllLanguageSettings, FormatOnSave, Formatter, LanguageSettings, LineEndingSetting,
@@ -94,6 +94,7 @@ use language::{
     },
     range_from_lsp, range_to_lsp,
     row_chunk::RowChunk,
+    with_parser,
 };
 use lsp::{
     AdapterServerCapabilities, CodeActionKind, CompletionContext, DEFAULT_LSP_REQUEST_TIMEOUT,
@@ -16561,6 +16562,91 @@ impl LspAdapterDelegate for LocalLspAdapterDelegate {
             .with_context(|| format!("no worktree entry for path {path:?}"))?;
         let abs_path = self.worktree.absolutize(&entry.path);
         self.fs.load(&abs_path).await
+    }
+
+    async fn read_syntax_tree(&self, path: &RelPath) -> Result<Vec<SyntaxNode>> {
+        let entry = self
+            .worktree
+            .entry_for_path(path)
+            .with_context(|| format!("no worktree entry for path {path:?}"))?;
+        let abs_path = self.worktree.absolutize(&entry.path);
+        let text = self.fs.load(&abs_path).await?;
+        let language = self
+            .language_registry
+            .load_language_for_file_path(abs_path.as_ref())
+            .await
+            .with_context(|| format!("no language found for path {}", abs_path.display()))?;
+        let grammar = language.grammar().with_context(|| {
+            format!("language {:?} has no tree-sitter grammar", language.name())
+        })?;
+
+        let syntax_tree = with_parser(|parser| -> Result<_> {
+            parser.set_language(&grammar.ts_language).with_context(|| {
+                format!("failed to set parser language for {:?}", language.name())
+            })?;
+            parser
+                .parse(text.as_str(), None)
+                .with_context(|| format!("failed to parse syntax tree for {}", abs_path.display()))
+        })?;
+
+        let mut syntax_nodes = Vec::new();
+        let mut cursor = syntax_tree.root_node().walk();
+        let mut parent_ids = Vec::<u32>::new();
+        let mut next_id = 0u32;
+        let mut visited_children = false;
+
+        loop {
+            if visited_children {
+                if cursor.goto_next_sibling() {
+                    visited_children = false;
+                    continue;
+                }
+
+                if cursor.goto_parent() {
+                    parent_ids.pop();
+                    continue;
+                }
+
+                break;
+            }
+
+            let depth = cursor.depth() as usize;
+            if parent_ids.len() > depth {
+                parent_ids.truncate(depth);
+            }
+
+            let node = cursor.node();
+            let node_id = next_id;
+            next_id = next_id
+                .checked_add(1)
+                .context("syntax tree has more than u32::MAX nodes")?;
+            let start = node.start_position();
+            let end = node.end_position();
+
+            syntax_nodes.push(SyntaxNode {
+                id: node_id,
+                parent_id: parent_ids.last().copied(),
+                kind: node.kind().to_string(),
+                named: node.is_named(),
+                field_name: cursor.field_name().map(ToOwned::to_owned),
+                start_byte: u32::try_from(node.start_byte())
+                    .context("node start_byte exceeds u32::MAX")?,
+                end_byte: u32::try_from(node.end_byte()).context("node end_byte exceeds u32::MAX")?,
+                start_row: u32::try_from(start.row).context("node start row exceeds u32::MAX")?,
+                start_column: u32::try_from(start.column)
+                    .context("node start column exceeds u32::MAX")?,
+                end_row: u32::try_from(end.row).context("node end row exceeds u32::MAX")?,
+                end_column: u32::try_from(end.column).context("node end column exceeds u32::MAX")?,
+            });
+
+            if cursor.goto_first_child() {
+                parent_ids.push(node_id);
+            } else {
+                visited_children = true;
+            }
+        }
+
+        Ok(syntax_nodes)
     }
 }
 

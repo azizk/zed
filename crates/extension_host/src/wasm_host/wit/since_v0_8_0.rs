@@ -11,7 +11,8 @@ use async_compression::futures::bufread::GzipDecoder;
 use async_tar::Archive;
 use async_trait::async_trait;
 use extension::{
-    ExtensionLanguageServerProxy, KeyValueStoreDelegate, ProjectDelegate, WorktreeDelegate,
+    ExtensionLanguageServerProxy, KeyValueStoreDelegate, ProjectDelegate,
+    SyntaxNode as ExtensionSyntaxNode, WorktreeDelegate,
 };
 use futures::{AsyncReadExt, lock::Mutex};
 use futures::{FutureExt as _, io::BufReader};
@@ -87,6 +88,24 @@ impl From<Command> for extension::Command {
             command: value.command.into(),
             args: value.args,
             env: value.env,
+        }
+    }
+}
+
+impl From<ExtensionSyntaxNode> for SyntaxNode {
+    fn from(value: ExtensionSyntaxNode) -> Self {
+        Self {
+            id: value.id,
+            parent_id: value.parent_id,
+            kind: value.kind,
+            named: value.named,
+            field_name: value.field_name,
+            start_byte: value.start_byte,
+            end_byte: value.end_byte,
+            start_row: value.start_row,
+            start_column: value.start_column,
+            end_row: value.end_row,
+            end_column: value.end_column,
         }
     }
 }
@@ -602,6 +621,19 @@ impl HostWorktree for WasmState {
                 &RelPath::new(Path::new(&path), PathStyle::Unix).into_wasmtime_result()?,
             )
             .await
+            .map_err(|error| error.to_string()))
+    }
+
+    async fn read_syntax_tree(
+        &mut self,
+        delegate: Resource<Arc<dyn WorktreeDelegate>>,
+        path: String,
+    ) -> wasmtime::Result<Result<Vec<SyntaxNode>, String>> {
+        let delegate = self.table.get(&delegate)?;
+        Ok(delegate
+            .read_syntax_tree(&RelPath::new(Path::new(&path), PathStyle::Posix)?)
+            .await
+            .map(|syntax_nodes| syntax_nodes.into_iter().map(Into::into).collect())
             .map_err(|error| error.to_string()))
     }
 

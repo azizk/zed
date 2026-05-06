@@ -34,6 +34,7 @@ pub trait WorktreeDelegate: Send + Sync + 'static {
     fn id(&self) -> u64;
     fn root_path(&self) -> String;
     async fn read_text_file(&self, path: &RelPath) -> Result<String>;
+    async fn read_syntax_tree(&self, path: &RelPath) -> Result<Vec<SyntaxNode>>;
     async fn which(&self, binary_name: String) -> Option<String>;
     async fn shell_env(&self) -> Vec<(String, String)>;
 }

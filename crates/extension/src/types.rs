@@ -69,3 +69,18 @@ pub struct CodeLabelSpanLiteral {
     /// The name of the highlight to use for this literal.
     pub highlight_name: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct SyntaxNode {
+    pub id: u32,
+    pub parent_id: Option<u32>,
+    pub kind: String,
+    pub named: bool,
+    pub field_name: Option<String>,
+    pub start_byte: u32,
+    pub end_byte: u32,
+    pub start_row: u32,
+    pub start_column: u32,
+    pub end_row: u32,
+    pub end_column: u32,
+}

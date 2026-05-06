@@ -5,12 +5,13 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use collections::{HashMap, HashSet};
-use extension::{Extension, ExtensionLanguageServerProxy, WorktreeDelegate};
+use extension::{Extension, ExtensionLanguageServerProxy, SyntaxNode, WorktreeDelegate};
 use futures::{FutureExt, future::join_all, lock::OwnedMutexGuard};
 use gpui::{App, AppContext, AsyncApp, Task};
 use language::{
     BinaryStatus, CodeLabel, DynLspInstaller, HighlightId, Language, LanguageName,
-    LanguageServerBinaryLocations, LspAdapter, LspAdapterDelegate, Toolchain,
+    LanguageServerBinaryLocations, LspAdapter, LspAdapterDelegate, SyntaxNode as LanguageSyntaxNode,
+    Toolchain,
 };
 use lsp::{
     CodeActionKind, LanguageServerBinary, LanguageServerBinaryOptions, LanguageServerName,
@@ -37,6 +38,26 @@ impl WorktreeDelegate for WorktreeDelegateAdapter {
 
     async fn read_text_file(&self, path: &RelPath) -> Result<String> {
         self.0.read_text_file(path).await
+    }
+
+    async fn read_syntax_tree(&self, path: &RelPath) -> Result<Vec<SyntaxNode>> {
+        let syntax_nodes = self.0.read_syntax_tree(path).await?;
+        Ok(syntax_nodes
+            .into_iter()
+            .map(|node: LanguageSyntaxNode| SyntaxNode {
+                id: node.id,
+                parent_id: node.parent_id,
+                kind: node.kind,
+                named: node.named,
+                field_name: node.field_name,
+                start_byte: node.start_byte,
+                end_byte: node.end_byte,
+                start_row: node.start_row,
+                start_column: node.start_column,
+                end_row: node.end_row,
+                end_column: node.end_column,
+            })
+            .collect())
     }
 
     async fn which(&self, binary_name: String) -> Option<String> {

@@ -13,7 +13,7 @@ use dap::{
         DapDelegate, DebugAdapter, DebugAdapterBinary, DebugAdapterName, DebugTaskDefinition,
     },
 };
-use extension::{Extension, WorktreeDelegate};
+use extension::{Extension, SyntaxNode, WorktreeDelegate};
 use gpui::AsyncApp;
 use task::{DebugScenario, ZedDebugConfig};
 use util::rel_path::RelPath;
@@ -61,6 +61,10 @@ impl WorktreeDelegate for WorktreeDelegateAdapter {
 
     async fn read_text_file(&self, path: &RelPath) -> Result<String> {
         self.0.read_text_file(path).await
+    }
+
+    async fn read_syntax_tree(&self, path: &RelPath) -> Result<Vec<SyntaxNode>> {
+        anyhow::bail!("reading syntax trees is unavailable for debugger adapters (path: {path:?})")
     }
 
     async fn which(&self, binary_name: String) -> Option<String> {
