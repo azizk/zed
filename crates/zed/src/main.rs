@@ -31,7 +31,8 @@ use futures::{FutureExt, StreamExt, channel::oneshot, future};
 use git::GitHostingProviderRegistry;
 use git_ui::clone::clone_and_open;
 use gpui::{
-    App, AppContext, Application, AsyncApp, QuitMode, Task, TaskExt, UpdateGlobal as _, block_on,
+    App, AppContext, Application, AsyncApp, QuitMode, Task, TaskExt, UpdateGlobal as _,
+    WindowHandle, block_on,
 };
 use gpui_platform;
 
@@ -67,10 +68,10 @@ use theme_settings::load_user_theme;
 use util::{ResultExt, maybe};
 use uuid::Uuid;
 use workspace::{
-    AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore,
+    AppState, MultiWorkspace, MultiWorkspaceState, SerializedWorkspaceLocation, SessionWorkspace,
+    Toast, WorkspaceSettings, WorkspaceStore, apply_restored_multiworkspace_state,
+    create_workspace_window,
     notifications::{NotificationId, NotifyResultExt},
-    restore_multiworkspace,
 };
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
@@ -1426,14 +1427,20 @@ pub(crate) async fn restore_or_create_workspace(
     cx: &mut AsyncApp,
 ) -> Result<()> {
     let kvp = cx.update(|cx| KeyValueStore::global(cx));
+
     if let Some(multi_workspaces) = restorable_workspaces(cx, &app_state).await {
         let mut error_count = 0;
+        let mut restored_windows: Vec<(WindowHandle<MultiWorkspace>, MultiWorkspaceState)> =
+            Vec::new();
+
+        // First create all windows, so that they pop up at once rather than
+        // one after another (which causes the window focus to be stolen).
         for multi_workspace in multi_workspaces {
             let result = match &multi_workspace.active_workspace.location {
                 SerializedWorkspaceLocation::Local => {
-                    restore_multiworkspace(multi_workspace, app_state.clone(), cx)
+                    create_workspace_window(&multi_workspace, app_state.clone(), cx)
                         .await
-                        .map(|_| ())
+                        .map(|window| (window, multi_workspace.state.clone()))
                 }
                 SerializedWorkspaceLocation::Remote(connection_options) => {
                     let mut connection_options = connection_options.clone();
@@ -1452,32 +1459,39 @@ pub(crate) async fn restore_or_create_workspace(
                         .map(PathBuf::from)
                         .collect::<Vec<_>>();
                     let state = multi_workspace.state.clone();
-                    async {
-                        let window = open_remote_project(
-                            connection_options,
-                            paths,
-                            app_state.clone(),
-                            workspace::OpenOptions::default(),
-                            cx,
-                        )
-                        .await?;
-                        workspace::apply_restored_multiworkspace_state(
-                            window,
-                            &state,
-                            app_state.fs.clone(),
-                            cx,
-                        )
-                        .await;
-                        Ok::<(), anyhow::Error>(())
-                    }
+                    open_remote_project(
+                        connection_options,
+                        paths,
+                        app_state.clone(),
+                        workspace::OpenOptions::default(),
+                        cx,
+                    )
                     .await
+                    .map(|window| (window, state))
                 }
             };
 
-            if let Err(error) = result {
-                log::error!("Failed to restore workspace: {error:#}");
-                error_count += 1;
+            match result {
+                Ok(window) => restored_windows.push(window),
+                Err(error) => {
+                    log::error!("Failed to restore workspace: {error:#}");
+                    error_count += 1;
+                }
             }
+        }
+
+        // Bring the window that was frontmost in the previous session to the front,
+        // now that every window has been created.
+        if let Some((window, _)) = restored_windows.last() {
+            window
+                .update(cx, |_, window, _cx| window.activate_window())
+                .log_err();
+        }
+
+        // Now that all windows exist, load their contents.
+        for (window, state) in &restored_windows {
+            apply_restored_multiworkspace_state(window.clone(), state, app_state.fs.clone(), cx)
+                .await;
         }
 
         if error_count > 0 {
@@ -1490,12 +1504,12 @@ pub(crate) async fn restore_or_create_workspace(
                 )
             };
 
-            // Try to find an active workspace to show the toast
-            let toast_shown = cx.update(|cx| {
-                if let Some(window) = cx.active_window()
-                    && let Some(multi_workspace) = window.downcast::<MultiWorkspace>()
-                {
-                    multi_workspace
+            // Show the toast in the currently focused window.
+            let toast_shown = cx
+                .update(|cx| cx.active_window())
+                .and_then(|handle| handle.downcast::<MultiWorkspace>())
+                .is_some_and(|window| {
+                    window
                         .update(cx, |multi_workspace, _, cx| {
                             multi_workspace.workspace().update(cx, |workspace, cx| {
                                 workspace.show_toast(
@@ -1504,11 +1518,8 @@ pub(crate) async fn restore_or_create_workspace(
                                 )
                             });
                         })
-                        .ok();
-                    return true;
-                }
-                false
-            });
+                        .is_ok()
+                });
 
             // If we couldn't show a toast (no windows opened successfully),
             // open a fallback empty workspace and show the error there

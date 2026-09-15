@@ -10200,6 +10200,31 @@ pub async fn restore_multiworkspace(
     app_state: Arc<AppState>,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<WindowHandle<MultiWorkspace>> {
+    let window_handle = create_workspace_window(&multi_workspace, app_state.clone(), cx).await?;
+
+    apply_restored_multiworkspace_state(
+        window_handle.clone(),
+        &multi_workspace.state,
+        app_state.fs.clone(),
+        cx,
+    )
+    .await;
+
+    window_handle
+        .update(cx, |_, window, _cx| window.activate_window())
+        .ok();
+
+    Ok(window_handle)
+}
+
+/// Creates the window for a [`SerializedMultiWorkspace`] without loading its
+/// contents. The contents should be restored afterwards with
+/// [`apply_restored_multiworkspace_state`].
+pub async fn create_workspace_window(
+    multi_workspace: &SerializedMultiWorkspace,
+    app_state: Arc<AppState>,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<WindowHandle<MultiWorkspace>> {
     let SerializedMultiWorkspace {
         active_workspace,
         state,
@@ -10226,15 +10251,10 @@ pub async fn restore_multiworkspace(
         .map(|result| result.window)
     };
 
-    let window_handle = match workspace_result {
+    match workspace_result {
         Ok(handle) => {
             restore_native_window_state(handle, active_workspace.workspace_id, cx);
-            handle
-                .update(cx, |_, window, _cx| {
-                    window.activate_window();
-                })
-                .ok();
-            handle
+            Ok(handle)
         }
         Err(err) => {
             log::error!("Failed to restore active workspace: {err:#}");
@@ -10267,19 +10287,9 @@ pub async fn restore_multiworkspace(
                 }
             }
 
-            fallback_handle.ok_or(err)?
+            Ok(fallback_handle.ok_or(err)?)
         }
-    };
-
-    apply_restored_multiworkspace_state(window_handle, &state, app_state.fs.clone(), cx).await;
-
-    window_handle
-        .update(cx, |_, window, _cx| {
-            window.activate_window();
-        })
-        .ok();
-
-    Ok(window_handle)
+    }
 }
 
 pub async fn apply_restored_multiworkspace_state(
