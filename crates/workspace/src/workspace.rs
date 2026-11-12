@@ -11897,9 +11897,8 @@ fn open_workspace_by_id(
             })?;
             (window, workspace)
         } else {
-            let options = cx.update(|cx| {
-                workspace_window_options(Some(&serialized_workspace), &app_state, cx)
-            });
+            let options = cx
+                .update(|cx| workspace_window_options(Some(&serialized_workspace), &app_state, cx));
             let window = cx.open_window(options, |window, cx| {
                 let workspace = cx.new(|cx| {
                     let mut workspace =
@@ -11909,7 +11908,8 @@ fn open_workspace_by_id(
                 });
                 cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
             })?;
-            let workspace = window.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())?;
+            let workspace =
+                window.read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())?;
             (window, workspace)
         };
 
