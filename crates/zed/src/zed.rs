@@ -8096,6 +8096,7 @@ mod tests {
 
         let created_windows = Rc::new(RefCell::new(Vec::new()));
         let loaded_workspaces = Rc::new(Cell::new(0));
+        let selection_changed = Rc::new(Cell::new(false));
         let _observe_windows = cx.update(|cx| {
             cx.observe_new::<MultiWorkspace>({
                 let created_windows = created_windows.clone();
@@ -8114,27 +8115,69 @@ mod tests {
             cx.observe_new::<Workspace>({
                 let created_windows = created_windows.clone();
                 let loaded_workspaces = loaded_workspaces.clone();
+                let selection_changed = selection_changed.clone();
                 move |workspace, _, cx| {
                     if workspace.database_id().is_none() {
                         return;
                     }
                     let windows = created_windows.borrow();
                     assert_eq!(windows.len(), 3, "all windows must exist before loading");
-                    let first_window = windows.first().expect("first restored window");
-                    let selected_window = windows.last().expect("last restored window");
-                    if loaded_workspaces.get() == 0 {
-                        assert_eq!(cx.active_window(), Some((*first_window).into()));
-                        selected_window
-                            .update(cx, |_, window, _| window.activate_window())
-                            .expect("selected window should exist");
-                    }
+                    let selected_window = if selection_changed.get() {
+                        windows.last().expect("last restored window")
+                    } else {
+                        windows.first().expect("first restored window")
+                    };
                     assert_eq!(cx.active_window(), Some((*selected_window).into()));
                     loaded_workspaces.set(loaded_workspaces.get() + 1);
                 }
             })
         });
 
-        crate::restore_or_create_workspace(app_state, &mut cx.to_async())
+        let (loading_sender, mut loading_receiver) = mpsc::unbounded();
+        let (resume_loading, resume_receiver) = futures::channel::oneshot::channel::<()>();
+        let resume_receiver = resume_receiver.shared();
+        for path in [path!("/startup-a/a.txt"), path!("/startup-b/b.txt")] {
+            app_state.fs.as_fake().before_load(
+                path,
+                {
+                    let loading_sender = loading_sender.clone();
+                    let resume_receiver = resume_receiver.clone();
+                    async move {
+                        loading_sender
+                            .unbounded_send(())
+                            .expect("loading should be observed");
+                        resume_receiver.await.expect("loading should be resumed");
+                    }
+                }
+                .boxed(),
+            );
+        }
+        let restore_task = cx
+            .to_async()
+            .spawn(async move |cx| crate::restore_or_create_workspace(app_state, cx).await);
+        let loading_timeout = cx
+            .background_executor
+            .timer(std::time::Duration::from_secs(3))
+            .fuse();
+        futures::pin_mut!(loading_timeout);
+        for _ in 0..2 {
+            select_biased! {
+                started = loading_receiver.next().fuse() => {
+                    started.expect("project loading should start");
+                }
+                _ = loading_timeout => panic!("both projects must start loading before either finishes"),
+            }
+        }
+        let selected_window = *created_windows
+            .borrow()
+            .last()
+            .expect("last restored window");
+        selected_window
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("selected window should exist");
+        selection_changed.set(true);
+        resume_loading.send(()).expect("loading should be waiting");
+        restore_task
             .await
             .expect("session restoration should succeed");
         cx.run_until_parked();

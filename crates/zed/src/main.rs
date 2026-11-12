@@ -1454,106 +1454,120 @@ pub(crate) async fn restore_or_create_workspace(
             restored_windows
         });
 
-        for (window, multi_workspace) in &restored_windows {
-            let result = match &multi_workspace.active_workspace.location {
-                SerializedWorkspaceLocation::Local => {
-                    restore_multiworkspace_in_window(
-                        *window,
-                        multi_workspace,
-                        app_state.clone(),
-                        cx,
-                    )
-                    .await
-                }
-                SerializedWorkspaceLocation::Remote(connection_options) => {
-                    async {
-                        let placeholder_workspace = window
-                            .read_with(cx, |multi_workspace, _| {
-                                multi_workspace.workspace().clone()
-                            })?;
-                        let mut connection_options = connection_options.clone();
-                        if let RemoteConnectionOptions::Ssh(options) = &mut connection_options {
-                            cx.update(|cx| {
-                                RemoteSettings::get_global(cx)
-                                    .fill_connection_options_from_settings(options)
-                            });
+        let restore_tasks = restored_windows
+            .into_iter()
+            .map(|(window, multi_workspace)| {
+                let app_state = app_state.clone();
+                cx.spawn(async move |cx| {
+                    let mut error_count = 0;
+                    let result = match &multi_workspace.active_workspace.location {
+                        SerializedWorkspaceLocation::Local => {
+                            restore_multiworkspace_in_window(
+                                window,
+                                &multi_workspace,
+                                app_state.clone(),
+                                cx,
+                            )
+                            .await
                         }
+                        SerializedWorkspaceLocation::Remote(connection_options) => {
+                            async {
+                                let placeholder_workspace = window
+                                    .read_with(cx, |multi_workspace, _| {
+                                        multi_workspace.workspace().clone()
+                                    })?;
+                                let mut connection_options = connection_options.clone();
+                                if let RemoteConnectionOptions::Ssh(options) =
+                                    &mut connection_options
+                                {
+                                    cx.update(|cx| {
+                                        RemoteSettings::get_global(cx)
+                                            .fill_connection_options_from_settings(options)
+                                    });
+                                }
 
-                        let paths = multi_workspace
-                            .active_workspace
-                            .paths
-                            .paths()
-                            .iter()
-                            .map(PathBuf::from)
-                            .collect::<Vec<_>>();
-                        let window = open_remote_project(
-                            connection_options,
-                            paths,
-                            app_state.clone(),
-                            workspace::OpenOptions {
-                                // Each saved window must retain its own project roots,
-                                // even when some roots also appear in another window.
-                                workspace_matching: workspace::WorkspaceMatching::None,
-                                requesting_window: Some(*window),
-                                focus: Some(false),
-                                ..Default::default()
-                            },
-                            cx,
-                        )
-                        .await?;
-                        window.update(cx, |multi_workspace, _, cx| {
+                                let paths = multi_workspace
+                                    .active_workspace
+                                    .paths
+                                    .paths()
+                                    .iter()
+                                    .map(PathBuf::from)
+                                    .collect::<Vec<_>>();
+                                let window = open_remote_project(
+                                    connection_options,
+                                    paths,
+                                    app_state.clone(),
+                                    workspace::OpenOptions {
+                                        // Each saved window must retain its own project roots,
+                                        // even when some roots also appear in another window.
+                                        workspace_matching: workspace::WorkspaceMatching::None,
+                                        requesting_window: Some(window),
+                                        focus: Some(false),
+                                        ..Default::default()
+                                    },
+                                    cx,
+                                )
+                                .await?;
+                                window.update(cx, |multi_workspace, _, cx| {
+                                    multi_workspace
+                                        .remove_placeholder_workspace(&placeholder_workspace, cx);
+                                })?;
+                                apply_restored_multiworkspace_state(
+                                    window,
+                                    &multi_workspace.state,
+                                    app_state.fs.clone(),
+                                    cx,
+                                )
+                                .await;
+                                Ok(())
+                            }
+                            .await
+                        }
+                    };
+
+                    if let Err(error) = result {
+                        log::error!("Failed to restore workspace: {error:#}");
+                        error_count += 1;
+                    }
+
+                    let placeholder_workspace = window
+                        .read_with(cx, |multi_workspace, cx| {
+                            let workspace = multi_workspace.workspace();
+                            workspace
+                                .read(cx)
+                                .database_id()
+                                .is_none()
+                                .then(|| workspace.clone())
+                        })
+                        .log_err()
+                        .flatten();
+                    if let Some(placeholder_workspace) = placeholder_workspace {
+                        // A failed or cancelled restoration must leave a usable, persistent workspace.
+                        let result = cx
+                            .update(|cx| {
+                                workspace::Workspace::new_local(
+                                    Vec::new(),
+                                    app_state.clone(),
+                                    Some(window),
+                                    None,
+                                    None,
+                                    workspace::OpenMode::Add,
+                                    cx,
+                                )
+                            })
+                            .await?;
+                        window.update(cx, |multi_workspace, window, cx| {
+                            multi_workspace.activate(result.workspace, None, window, cx);
                             multi_workspace
                                 .remove_placeholder_workspace(&placeholder_workspace, cx);
                         })?;
-                        apply_restored_multiworkspace_state(
-                            window,
-                            &multi_workspace.state,
-                            app_state.fs.clone(),
-                            cx,
-                        )
-                        .await;
-                        Ok(())
                     }
-                    .await
-                }
-            };
-
-            if let Err(error) = result {
-                log::error!("Failed to restore workspace: {error:#}");
-                error_count += 1;
-            }
-
-            let placeholder_workspace = window
-                .read_with(cx, |multi_workspace, cx| {
-                    let workspace = multi_workspace.workspace();
-                    workspace
-                        .read(cx)
-                        .database_id()
-                        .is_none()
-                        .then(|| workspace.clone())
+                    anyhow::Ok(error_count)
                 })
-                .log_err()
-                .flatten();
-            if let Some(placeholder_workspace) = placeholder_workspace {
-                // A failed or cancelled restoration must leave a usable, persistent workspace.
-                let result = cx
-                    .update(|cx| {
-                        workspace::Workspace::new_local(
-                            Vec::new(),
-                            app_state.clone(),
-                            Some(*window),
-                            None,
-                            None,
-                            workspace::OpenMode::Add,
-                            cx,
-                        )
-                    })
-                    .await?;
-                window.update(cx, |multi_workspace, window, cx| {
-                    multi_workspace.activate(result.workspace, None, window, cx);
-                    multi_workspace.remove_placeholder_workspace(&placeholder_workspace, cx);
-                })?;
-            }
+            })
+            .collect::<Vec<_>>();
+        for result in future::join_all(restore_tasks).await {
+            error_count += result?;
         }
 
         if error_count > 0 {

@@ -1467,6 +1467,7 @@ struct FakeFsState {
     metadata_call_count: usize,
     read_dir_call_count: usize,
     read_dir_hooks: BTreeMap<PathBuf, BoxFuture<'static, ()>>,
+    load_hooks: BTreeMap<PathBuf, BoxFuture<'static, ()>>,
     path_write_counts: std::collections::HashMap<PathBuf, usize>,
     job_event_subscribers: Arc<Mutex<Vec<JobEventSender>>>,
     trash: Mutex<SlotMap<TrashId, (TrashedEntry, FakeFsEntry)>>,
@@ -1863,6 +1864,7 @@ impl FakeFs {
             read_dir_call_count: 0,
             metadata_call_count: 0,
             read_dir_hooks: Default::default(),
+            load_hooks: Default::default(),
             path_write_counts: Default::default(),
             job_event_subscribers: Arc::new(Mutex::new(Vec::new())),
             trash: Mutex::new(SlotMap::with_key()),
@@ -2043,6 +2045,10 @@ impl FakeFs {
         let path = path.as_ref();
         let path = normalize_path(path);
         self.simulate_random_delay().await;
+        let hook = self.state.lock().load_hooks.remove(&path);
+        if let Some(hook) = hook {
+            hook.await;
+        }
         let mut state = self.state.lock();
         let entry = state.entry(&path)?;
         entry.file_content(&path).cloned()
@@ -2095,6 +2101,13 @@ impl FakeFs {
         self.state
             .lock()
             .read_dir_hooks
+            .insert(normalize_path(path.as_ref()), hook);
+    }
+
+    pub fn before_load(&self, path: impl AsRef<Path>, hook: BoxFuture<'static, ()>) {
+        self.state
+            .lock()
+            .load_hooks
             .insert(normalize_path(path.as_ref()), hook);
     }
 
